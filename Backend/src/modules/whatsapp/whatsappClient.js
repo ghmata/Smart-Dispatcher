@@ -26,7 +26,9 @@ class WhatsAppClient extends EventEmitter {
     this.sendHistory = [];
     this.reconnectAttempts = 0;
     this.idleTimer = null;
+    this.idleTimer = null;
     this.messageTracker = new Map();
+    this.persistedInfo = null; // Store info read from disk
 
     this.complianceConfig = {
       maxMessagesPerHour: config.compliance.maxMessagesPerHour || 50,
@@ -73,7 +75,11 @@ class WhatsAppClient extends EventEmitter {
 
       if (connection === 'close') {
         const reason = lastDisconnect?.error?.output?.statusCode;
-        this._transition(STATES.DISCONNECTED, `connection_close:${reason || 'unknown'}`);
+        // If 401 (Logged Out), go to DISCONNECTED/ERROR.
+        // For 515 (Restart) or others, go to AUTHENTICATING to keep "Syncing" UI.
+        const nextState = (reason === 401 || reason === 403) ? STATES.DISCONNECTED : STATES.AUTHENTICATING;
+        
+        this._transition(nextState, `connection_close:${reason || 'unknown'}`);
         this._handleReconnect(reason);
       }
     });
@@ -89,10 +95,20 @@ class WhatsAppClient extends EventEmitter {
     });
   }
 
-  _handleReconnect(reason) {
+  async _handleReconnect(reason) {
     if (this.provider.isLoggedOut && this.provider.isLoggedOut()) {
-      this._transition(STATES.ERROR, 'logged_out');
+      this._transition(STATES.DISCONNECTED, 'logged_out');
       logger.error(`[${this.id}] Logged out. Session invalidated.`);
+      
+      // AUTO-CLEANUP: Clear invalid auth data immediately
+      if (typeof this.provider.clearState === 'function') {
+        try {
+          await this.provider.clearState();
+          logger.info(`[${this.id}] Auto-cleaned invalid session data.`);
+        } catch (e) {
+          logger.error(`[${this.id}] Failed to auto-clean session: ${e.message}`);
+        }
+      }
       return;
     }
 
@@ -118,9 +134,9 @@ class WhatsAppClient extends EventEmitter {
     const allowed = {
       [STATES.INIT]: [STATES.AUTHENTICATING, STATES.ERROR],
       [STATES.AUTHENTICATING]: [STATES.CONNECTED, STATES.ERROR, STATES.DISCONNECTED],
-      [STATES.CONNECTED]: [STATES.READY, STATES.ERROR, STATES.DISCONNECTED],
-      [STATES.READY]: [STATES.SENDING, STATES.IDLE, STATES.COOLDOWN, STATES.ERROR, STATES.DISCONNECTED],
-      [STATES.IDLE]: [STATES.READY, STATES.SENDING, STATES.COOLDOWN, STATES.ERROR, STATES.DISCONNECTED],
+      [STATES.CONNECTED]: [STATES.READY, STATES.ERROR, STATES.DISCONNECTED, STATES.AUTHENTICATING],
+      [STATES.READY]: [STATES.SENDING, STATES.IDLE, STATES.COOLDOWN, STATES.ERROR, STATES.DISCONNECTED, STATES.AUTHENTICATING],
+      [STATES.IDLE]: [STATES.READY, STATES.SENDING, STATES.COOLDOWN, STATES.ERROR, STATES.DISCONNECTED, STATES.AUTHENTICATING],
       [STATES.SENDING]: [STATES.COOLDOWN, STATES.READY, STATES.ERROR, STATES.DISCONNECTED],
       [STATES.COOLDOWN]: [STATES.READY, STATES.IDLE, STATES.ERROR, STATES.DISCONNECTED],
       [STATES.DISCONNECTED]: [STATES.AUTHENTICATING, STATES.ERROR],
@@ -159,6 +175,12 @@ class WhatsAppClient extends EventEmitter {
 
   async initialize() {
     logger.info(`[${this.id}] Initializing...`);
+    
+    // Load persisted info first for visibility
+    if (this.provider.getPersistedSessionInfo) {
+        this.persistedInfo = await this.provider.getPersistedSessionInfo();
+    }
+
     this._transition(STATES.AUTHENTICATING, 'initialize');
     try {
       await this.provider.initialize();
@@ -215,9 +237,11 @@ class WhatsAppClient extends EventEmitter {
         throw new Error(`Number ${rawNumber} is not registered on WhatsApp`);
       }
 
+      // STRICT JID USAGE: Use the verified JID from onWhatsApp, not the user input
       const result = await this.provider.sendMessage(jid, message);
       const messageId = result?.key?.id || result?.key?.id;
-      const remoteJid = result?.key?.remoteJid || jid;
+      const remoteJid = jid; // Always use the validated JID
+
       if (messageId) {
         this.messageTracker.set(messageId, {
           ...correlation,
@@ -323,11 +347,47 @@ class WhatsAppClient extends EventEmitter {
   }
 
   getPhoneNumber() {
-    return this.provider.getPhoneNumber();
+    return this.provider.getPhoneNumber() || this.persistedInfo?.id || null;
   }
 
   getDisplayName() {
-    return this.provider.getDisplayName();
+    return this.provider.getDisplayName() || this.persistedInfo?.name || null;
+  }
+
+  async waitForDelivery(messageId, timeoutMs = 60000) {
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(new Error('Delivery Timed Out'));
+      }, timeoutMs);
+
+      const statusListener = (update) => {
+        if (update.messageId === messageId && this._isDelivered(update.status)) {
+          cleanup();
+          resolve(true);
+        }
+      };
+
+      const connectionListener = ({ status }) => {
+        if (status === STATES.DISCONNECTED || status === STATES.ERROR) {
+          cleanup();
+          reject(new Error('Connection dropped during delivery wait'));
+        }
+      };
+
+      const cleanup = () => {
+        clearTimeout(timer);
+        this.removeListener('message_status', statusListener);
+        this.removeListener('status', connectionListener);
+      };
+
+      this.on('message_status', statusListener);
+      this.on('status', connectionListener);
+    });
+  }
+
+  _isDelivered(status) {
+    return ['DELIVERED', 'READ', 'PLAYED'].includes(status);
   }
 
   async shutdown() {

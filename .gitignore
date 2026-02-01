@@ -1,5 +1,6 @@
 # Dependencies
 node_modules/
+.pnpm-store/
 
 # Next.js
 .next/
@@ -9,17 +10,19 @@ dist/
 
 # Environment Variables
 .env
-.env.local
-.env.development.local
-.env.test.local
-.env.production.local
+.env.*
+!.env.example
+
+# Quarantine (Cleanup)
+_quarantine/
 
 # WhatsApp Session Data (Keep this local!)
 .wwebjs_auth/
 .wwebjs_cache/
 Backend/data/sessions/
 Backend/src/modules/whatsapp/.wwebjs_auth/
-session-*
+session-*/
+auth_info_baileys/
 
 # Logs
 npm-debug.log*
@@ -27,11 +30,21 @@ yarn-debug.log*
 yarn-error.log*
 logs/
 *.log
+Backend/data/logs/
 
 # Editor
 .vscode/
 .idea/
+*.swp
+*.swo
 
-# Backend Data (Uploads/Reports)
+# Backend Data (Uploads/Reports/State)
 Backend/data/uploads/
 Backend/data/exports/
+Backend/data/campaign_state.json
+Backend/data/daily_stats.json
+Backend/uploads/
+
+# OS
+.DS_Store
+Thumbs.db

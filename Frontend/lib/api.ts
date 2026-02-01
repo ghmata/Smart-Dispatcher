@@ -84,6 +84,7 @@ export interface Session {
   battery?: number;
   phone?: string | null;
   displayOrder?: number;
+  qrTimestamp?: number | null;
 }
 
 export interface SystemStatus {
@@ -111,9 +112,7 @@ export async function getSessions(): Promise<Session[]> {
 
 export async function getHourlyData(): Promise<HourlyData[]> {
     try {
-        // Optional endpoint, don't crash if missing
-        // return await fetchClient<HourlyData[]>('/analytics/hourly');
-        return [];
+        return await fetchClient<HourlyData[]>('/dashboard/hourly');
     } catch {
         return [];
     }
@@ -125,7 +124,11 @@ export async function createSession(): Promise<{ id: string; status?: string }> 
 
 export async function connectSession(chipId: string): Promise<{ success: boolean }> {
   // Logic handled by createSession basically
-  return { success: true };
+  return fetchClient<{ success: boolean }>(`/session/${chipId}/connect`, { method: 'POST' });
+}
+
+export async function deleteSession(chipId: string): Promise<{ success: boolean }> {
+  return fetchClient<{ success: boolean }>(`/session/${chipId}`, { method: 'DELETE' });
 }
 
 export async function startCampaign(data: {

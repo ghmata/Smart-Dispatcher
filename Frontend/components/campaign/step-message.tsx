@@ -15,9 +15,15 @@ const variableButtons = [
   { label: "[Link]", value: "[Link]" },
 ];
 
+import { QuickTemplateManager } from "./quick-template-manager";
+
 export function StepMessage({ message, onMessageChange }: StepMessageProps) {
   const insertVariable = (variable: string) => {
     onMessageChange(message + variable);
+  };
+
+  const applyTemplate = (text: string) => {
+    onMessageChange(text);
   };
 
   // Highlight spintax patterns
@@ -38,6 +44,10 @@ export function StepMessage({ message, onMessageChange }: StepMessageProps) {
       </div>
 
       <div className="space-y-4">
+        {/* Quick Templates */}
+        {/* Quick Templates Manager */}
+        <QuickTemplateManager onSelectTemplate={applyTemplate} />
+
         {/* Variable Buttons */}
         <div className="flex flex-wrap gap-2">
           <span className="text-sm text-muted-foreground mr-2">
@@ -60,7 +70,7 @@ export function StepMessage({ message, onMessageChange }: StepMessageProps) {
         <Textarea
           value={message}
           onChange={(e) => onMessageChange(e.target.value)}
-          placeholder="{Olá|Oi} [Nome]! Tudo bem?
+          placeholder="{Olá/Oi} [Nome]! Tudo bem?
 
 Estamos com uma oferta especial para você..."
           className="min-h-[200px] bg-secondary/50 border-border font-mono text-sm resize-none"
@@ -73,17 +83,17 @@ Estamos com uma oferta especial para você..."
               Dica: Usando Spintax
             </p>
             <p className="text-sm text-muted-foreground mb-3">
-              Use chaves com opções separadas por | para criar variações
+              Use chaves com opções separadas por / para criar variações
               automáticas na mensagem.
             </p>
             <div className="bg-secondary rounded-lg p-3">
               <p className="text-sm font-mono text-foreground">
                 <span className="bg-yellow-500/30 text-yellow-300 px-1 rounded">
-                  {"{Olá|Oi|Hey}"}
+                  {"{Olá/Oi/Hey}"}
                 </span>{" "}
                 [Nome], tudo{" "}
                 <span className="bg-yellow-500/30 text-yellow-300 px-1 rounded">
-                  {"{bem|certo}"}
+                  {"{bem/certo}"}
                 </span>
                 ?
               </p>

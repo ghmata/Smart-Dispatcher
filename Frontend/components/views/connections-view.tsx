@@ -24,7 +24,13 @@ export function ConnectionsView() {
     refreshSessions().finally(() => setLoading(false));
   }, [refreshSessions]);
 
+  // Strict Creation Rule: Can only add if ALL existing chips are ONLINE
+  const canAddChip = sessions.length === 0 || sessions.every((s) => s.status === "READY" || s.status === "ONLINE");
+
   const handleAddChip = async () => {
+    if (!canAddChip) return;
+    
+    // ... [existing logic] ...
     // Optimistic UI: Show card immediately
     const tempId = `temp_${Date.now()}`;
     addOptimisticSession({
@@ -40,7 +46,7 @@ export function ConnectionsView() {
       if (response?.id) {
         replaceOptimisticSession(tempId, {
           id: response.id,
-          status: response.status ?? "LOADING",
+          status: (response.status as Session["status"]) ?? "LOADING",
           displayOrder: sessions.length + 1,
           name: "Gerando Novo Chip...",
         });
@@ -54,9 +60,10 @@ export function ConnectionsView() {
     }
   };
 
-  const connectedCount = sessions.filter(
-    (s) => s.status === "READY" || s.status === "ONLINE"
-  ).length;
+  const connectedCount = sessions.filter((s) => {
+    const status = s.status?.toUpperCase();
+    return ["READY", "ONLINE", "IDLE", "SENDING", "COOLDOWN"].includes(status || "");
+  }).length;
 
   return (
     <div className="space-y-6">
@@ -69,7 +76,7 @@ export function ConnectionsView() {
             {connectedCount} de {sessions.length} chips conectados
           </p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex gap-2 items-center">
           <Button
             variant="outline"
             size="sm"
@@ -79,23 +86,32 @@ export function ConnectionsView() {
             <RefreshCw className={`mr-2 h-4 w-4 ${loading ? "animate-spin" : ""}`} />
             Atualizar
           </Button>
-          <Button
-            onClick={handleAddChip}
-            disabled={creating}
-            className="bg-primary hover:bg-primary/90 text-primary-foreground"
-          >
-            {creating ? (
-              <>
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                Criando...
-              </>
-            ) : (
-              <>
-                <Plus className="mr-2 h-4 w-4" />
-                Adicionar Novo Chip
-              </>
+          
+          <div className="flex flex-col items-end">
+            <Button
+                onClick={handleAddChip}
+                disabled={creating || !canAddChip}
+                className="bg-primary hover:bg-primary/90 text-primary-foreground disabled:opacity-50"
+                title={!canAddChip ? "Todos os chips anteriores devem estar Online" : ""}
+            >
+                {creating ? (
+                <>
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    Criando...
+                </>
+                ) : (
+                <>
+                    <Plus className="mr-2 h-4 w-4" />
+                    Adicionar Novo Chip
+                </>
+                )}
+            </Button>
+            {!canAddChip && (
+                <span className="text-[10px] text-red-400 mt-1">
+                    Conecte os chips anteriores primeiro
+                </span>
             )}
-          </Button>
+          </div>
         </div>
       </div>
 
@@ -106,14 +122,16 @@ export function ConnectionsView() {
       ) : sessions.length === 0 ? (
         <div className="flex h-[50vh] flex-col items-center justify-center gap-4">
           <p className="text-muted-foreground">Nenhum chip cadastrado</p>
-          <Button onClick={handleAddChip} disabled={creating}>
+          <Button onClick={handleAddChip} disabled={creating || !canAddChip}>
             <Plus className="mr-2 h-4 w-4" />
             Adicionar Primeiro Chip
           </Button>
         </div>
       ) : (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          {sessions.map((session) => (
+          {sessions
+            .sort((a, b) => (a.displayOrder || 0) - (b.displayOrder || 0))
+            .map((session) => (
             <ChipCard
               key={session.id}
               session={session}

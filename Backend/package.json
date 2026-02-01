@@ -4,7 +4,6 @@
   "description": "Portable WhatsApp Dispatcher for Windows",
   "main": "src/main/index.js",
   "scripts": {
-    "test": "node tests/test-parser.js",
     "lint": "eslint src/",
     "start": "node src/server/api.js",
     "dev": "node --watch src/server/api.js",

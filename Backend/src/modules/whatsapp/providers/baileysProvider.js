@@ -1,4 +1,5 @@
 const P = require('pino');
+const logger = require('../../utils/logger');
 const {
   default: makeWASocket,
   useMultiFileAuthState,
@@ -9,6 +10,9 @@ const {
 
 const pathHelper = require('../../utils/pathHelper');
 const WhatsAppProvider = require('./whatsAppProvider');
+const FileLockHelper = require('../../utils/fileLockHelper');
+const path = require('path');
+
 
 class BaileysProvider extends WhatsAppProvider {
   constructor(id, options = {}) {
@@ -77,10 +81,19 @@ class BaileysProvider extends WhatsAppProvider {
       throw new Error('Provider not initialized');
     }
     const normalized = this._normalizeNumber(rawNumber);
-    const jid = jidNormalizedUser(`${normalized}@s.whatsapp.net`);
-    const result = await this.socket.onWhatsApp(jid);
-    const exists = Boolean(result && result[0] && result[0].exists);
-    return { jid, exists };
+    const constructedJid = jidNormalizedUser(`${normalized}@s.whatsapp.net`);
+    
+    const result = await this.socket.onWhatsApp(constructedJid);
+
+    if (result && result[0] && result[0].exists) {
+      const correctJid = result[0].jid;
+      if (correctJid !== constructedJid) {
+        logger.info(`[FIX] JID corrigido de ${constructedJid} para ${correctJid}`);
+      }
+      return { jid: correctJid, exists: true };
+    }
+
+    return { jid: constructedJid, exists: false };
   }
 
   async sendMessage(jid, message) {
@@ -90,10 +103,28 @@ class BaileysProvider extends WhatsAppProvider {
     return this.socket.sendMessage(jid, { text: message });
   }
 
+  async getPersistedSessionInfo() {
+    try {
+        const sessionDir = pathHelper.resolve('data', 'sessions', `session-${this.id}`);
+        const credsPath = path.join(sessionDir, 'creds.json');
+        
+        const creds = await FileLockHelper.safeReadJson(credsPath);
+        if (creds && creds.me) {
+            return {
+                id: jidNormalizedUser(creds.me.id).split('@')[0],
+                name: creds.me.name
+            };
+        }
+    } catch (e) {
+        // Ignore errors, just fallback
+    }
+    return null;
+  }
+
   getPhoneNumber() {
     const id = this.socket?.user?.id;
-    if (!id) return null;
-    return id.split('@')[0];
+    if (id) return jidNormalizedUser(id).split('@')[0];
+    return null; 
   }
 
   getDisplayName() {
@@ -101,12 +132,30 @@ class BaileysProvider extends WhatsAppProvider {
   }
 
   async destroy() {
-    if (this.socket?.end) {
-      this.socket.end(new Error('Session stopped'));
-      return;
-    }
-    if (this.socket?.logout) {
-      await this.socket.logout();
+    if (this.socket) {
+        logger.info(`[BaileysProvider] Destroying session ${this.id}...`);
+        try {
+            // 1. SILENCE EVERYONE
+            if (this.socket.ev) {
+                this.socket.ev.removeAllListeners();
+            }
+
+            // 2. HARD KILL (Scorched Earth)
+            // preventing any graceful close handshakes that might trigger writes
+            if (this.socket.ws && typeof this.socket.ws.terminate === 'function') {
+                this.socket.ws.terminate();
+            } else if (this.socket.end) {
+                this.socket.end(new Error('Session killed'));
+            } else if (this.socket.logout) {
+                // Last resort
+                await this.socket.logout();
+            }
+            
+            this.socket = null;
+            logger.info(`[BaileysProvider] Session ${this.id} killed (Hard/Safe).`);
+        } catch (err) {
+            logger.error(`[BaileysProvider] Destroy error: ${err.message}`);
+        }
     }
   }
 
@@ -131,6 +180,70 @@ class BaileysProvider extends WhatsAppProvider {
       5: 'PLAYED'
     };
     return mapping[status] || null;
+  }
+  async clearState() {
+    const fs = require('fs');
+    const path = require('path');
+    const sessionDir = pathHelper.resolve('data', 'sessions', `session-${this.id}`);
+    
+    console.log(`[BaileysProvider] Clearing state at: ${sessionDir}`);
+    
+    if (!fs.existsSync(sessionDir)) {
+         console.log(`[BaileysProvider] Directory already missing: ${sessionDir}`);
+         return;
+    }
+
+    const deleteFolderRecursive = (dirPath, retries = 3) => {
+        if (fs.existsSync(dirPath)) {
+            const files = fs.readdirSync(dirPath);
+            for (const file of files) {
+                const curPath = path.join(dirPath, file);
+                if (fs.lstatSync(curPath).isDirectory()) {
+                    deleteFolderRecursive(curPath);
+                } else {
+                    try {
+                        fs.unlinkSync(curPath);
+                    } catch (err) {
+                        console.error(`[BaileysProvider] Failed to delete file ${file}: ${err.message}`);
+                    }
+                }
+            }
+            // Try to remove the dir itself
+            try {
+                fs.rmdirSync(dirPath);
+            } catch (err) {
+                 if (retries > 0) {
+                     console.log(`[BaileysProvider] Retrying dir delete... ${retries}`);
+                     const start = Date.now();
+                     while (Date.now() - start < 500); // sync sleep 500ms
+                     deleteFolderRecursive(dirPath, retries - 1);
+                 } else {
+                    console.error(`[BaileysProvider] FAILED to remove dir: ${err.message}`);
+                 }
+            }
+        }
+    };
+
+    try {
+        deleteFolderRecursive(sessionDir);
+        
+        // Final Verification
+        if (fs.existsSync(sessionDir)) {
+             const remaining = fs.readdirSync(sessionDir);
+             console.error(`[BaileysProvider] CRITICAL: Directory still exists with ${remaining.length} files. Force Renaming...`);
+             try {
+                const trashDir = pathHelper.resolve('data', 'sessions', `trash-${this.id}-${Date.now()}`);
+                fs.renameSync(sessionDir, trashDir);
+                console.log(`[BaileysProvider] Moved locked session to trash: ${trashDir}`);
+             } catch(renameErr) {
+                console.error(`[BaileysProvider] Rename failed: ${renameErr.message}`);
+             }
+        } else {
+             console.log(`[BaileysProvider] Cleared state for ${this.id} (Verified)`);
+        }
+    } catch (e) {
+        console.error(`[BaileysProvider] General Clean Error: ${e.message}`);
+    }
   }
 }
 

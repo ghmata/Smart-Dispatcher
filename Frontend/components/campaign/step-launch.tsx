@@ -9,6 +9,7 @@ import {
   Clock,
   CheckCircle,
   Loader2,
+  Pencil,
 } from "lucide-react";
 
 interface StepLaunchProps {
@@ -18,6 +19,7 @@ interface StepLaunchProps {
   delayMax: number;
   onLaunch: () => void;
   launching: boolean;
+  onEditStep: (stepId: number) => void;
 }
 
 export function StepLaunch({
@@ -27,6 +29,7 @@ export function StepLaunch({
   delayMax,
   onLaunch,
   launching,
+  onEditStep,
 }: StepLaunchProps) {
   const isReady = file && message.trim().length > 0;
 
@@ -36,6 +39,7 @@ export function StepLaunch({
       label: "Arquivo de Leads",
       value: file?.name ?? "Nenhum arquivo selecionado",
       valid: !!file,
+      stepId: 1,
     },
     {
       icon: MessageSquare,
@@ -44,12 +48,14 @@ export function StepLaunch({
         ? `${message.slice(0, 50)}${message.length > 50 ? "..." : ""}`
         : "Nenhuma mensagem",
       valid: message.trim().length > 0,
+       stepId: 2,
     },
     {
       icon: Clock,
       label: "Intervalo de Envio",
       value: `${delayMin}s - ${delayMax}s`,
       valid: true,
+      stepId: 3,
     },
   ];
 
@@ -93,7 +99,18 @@ export function StepLaunch({
                     <p className="font-medium text-foreground">{item.value}</p>
                   </div>
                 </div>
-                {item.valid && <CheckCircle className="h-5 w-5 text-green-400" />}
+                
+                 <div className="flex items-center gap-2">
+                    {item.valid && <CheckCircle className="h-5 w-5 text-green-400" />}
+                    <Button
+                        variant="ghost" 
+                        size="icon" 
+                        className="h-8 w-8 text-muted-foreground hover:text-primary"
+                        onClick={() => onEditStep(item.stepId)}
+                    >
+                        <Pencil className="h-4 w-4" />
+                    </Button>
+                 </div>
               </CardContent>
             </Card>
           );

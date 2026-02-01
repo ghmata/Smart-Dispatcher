@@ -6,6 +6,7 @@ import {
   useEffect,
   useState,
   useCallback,
+  useMemo,
   type ReactNode,
 } from "react";
 import { io, type Socket } from "socket.io-client";
@@ -53,12 +54,22 @@ const SocketContext = createContext<SocketContextType | null>(null);
 export function SocketProvider({ children }: { children: ReactNode }) {
   const [socket, setSocket] = useState<Socket | null>(null);
   const [isConnected, setIsConnected] = useState(false);
-  const [logs, setLogs] = useState<LogEntry[]>([]);
+  const [logs, setLogs] = useState<LogEntry[]>([
+    {
+      id: "init-1",
+      timestamp: new Date().toLocaleTimeString("pt-BR"),
+      chipId: "system",
+      message: "🔄 Conectando ao monitoramento da campanha...",
+      type: "info"
+    }
+  ]);
   const [qrCodes, setQrCodes] = useState<Record<string, string>>({});
   const [sessionChanges, setSessionChanges] = useState<
     Record<string, SessionChange["status"]>
   >({});
   const [sessions, setSessions] = useState<Session[]>([]);
+  // Track processed IDs to prevent duplicates in current session
+  const processedIds = useMemo(() => new Set<string>(), []);
 
   const addOptimisticSession = useCallback((session: Session) => {
       setSessions((prev) => [...prev, session]);
@@ -78,7 +89,7 @@ export function SocketProvider({ children }: { children: ReactNode }) {
   const normalizeStatus = useCallback((status: string | undefined) => {
       switch (status) {
         case "AUTHENTICATING":
-          return "QR";
+          return "AUTHENTICATING";
         case "CONNECTED":
           return "SYNCING";
         case "IDLE":
@@ -100,11 +111,20 @@ export function SocketProvider({ children }: { children: ReactNode }) {
       let phoneLabel = "";
       if (session.phone) {
           try {
-              const cleaned = session.phone.replace(/\D/g, '');
-              const ddd = cleaned.slice(2, 4);
-              const part1 = cleaned.slice(4, 9);
-              const part2 = cleaned.slice(9);
-              phoneLabel = ` - (${ddd}) ${part1}-${part2}`;
+              let cleaned = session.phone.replace(/\D/g, '');
+              // Fix: Inject '9' for Brazilian numbers that have it stripped (12 digits: 55 + DDD + 8 digits)
+              if (cleaned.startsWith('55') && cleaned.length === 12) {
+                cleaned = cleaned.slice(0, 4) + '9' + cleaned.slice(4);
+              }
+
+              if (cleaned.startsWith('55') && cleaned.length === 13) {
+                  const ddd = cleaned.slice(2, 4);
+                  const part1 = cleaned.slice(4, 9);
+                  const part2 = cleaned.slice(9);
+                  phoneLabel = ` - (${ddd}) ${part1}-${part2}`;
+              } else {
+                  phoneLabel = ` - ${session.phone}`;
+              }
           } catch {
               phoneLabel = ` - ${session.phone}`;
           }
@@ -195,7 +215,7 @@ export function SocketProvider({ children }: { children: ReactNode }) {
         setLogs((prev) => [...prev.slice(-99), newLog]);
     });
 
-    socketInstance.on("qr_code", ({ chipId, qr }: { chipId: string; qr: string }) => {
+    socketInstance.on("qr_code", ({ chipId, qr, qrTimestamp }: { chipId: string; qr: string; qrTimestamp?: number }) => {
         console.log(`[Socket] QR received for ${chipId}`);
         setQrCodes((prev) => ({ ...prev, [chipId]: qr }));
         // Ensure session exists in list if new, and remove any OPTIMISTIC "temp_" sessions
@@ -205,15 +225,149 @@ export function SocketProvider({ children }: { children: ReactNode }) {
             
             if (cleanPrev.find(s => s.id === chipId)) {
               return cleanPrev.map((s) =>
-                s.id === chipId ? { ...s, status: "QR" } : s
+                s.id === chipId ? { ...s, status: "QR", qrTimestamp } : s
               );
             }
             // Add placeholder if completely new
              return [...cleanPrev, { 
                  id: chipId, 
                  status: 'QR', 
-                 displayOrder: cleanPrev.length + 1 
+                 displayOrder: cleanPrev.length + 1,
+                 qrTimestamp
              }];
+        });
+    });
+
+    // Track processed IDs to prevent duplicates in current session (Moved to top level)
+    // const processedIds = useMemo(() => new Set<string>(), []); // MOVED UP -> See line 72
+
+
+    // NEW: Listen for Campaign Start - Fixed Scope
+    socketInstance.on("campaign_started", (payload: any) => {
+         // Reset processed IDs on new campaign launch
+         processedIds.clear();
+
+         const msg = `🚀 Campanha Iniciada. Aguarde... (Total: ${payload.totalContacts || '?'} contatos)`;
+         const newLog: LogEntry = {
+            id: crypto.randomUUID(),
+            timestamp: new Date().toLocaleTimeString("pt-BR"),
+            chipId: "Campanha",
+            message: msg,
+            type: "info"
+        };
+        setLogs((prev) => [...prev.slice(-99), newLog]);
+    });
+
+    // NEW: Listen for Campaign Finish
+    socketInstance.on("campaign_finished", (payload: any) => {
+         const msg = `🏁 Campanha encerrada com ${payload.processed || 0} envios e ${payload.failed || 0} falhas.`;
+         const newLog: LogEntry = {
+            id: crypto.randomUUID(),
+            timestamp: new Date().toLocaleTimeString("pt-BR"),
+            chipId: "Campanha",
+            message: msg,
+            type: "success" // Green highlight for completion
+        };
+        setLogs((prev) => [...prev.slice(-99), newLog]);
+    });
+
+    // NEW: Listen for Cooldown
+    socketInstance.on("cooldown_wait", (payload: any) => {
+         // Use authoritative min/max from backend if available, else estimate
+         const min = payload.min !== undefined ? payload.min : Math.max(0, Math.round((payload.duration || 0) / 1000) - 5);
+         const max = payload.max !== undefined ? payload.max : Math.round((payload.duration || 0) / 1000) + 5;
+         
+         const msg = `⏳ Aguarde o cooldown de ${min} a ${max} segundos para o próximo envio...`;
+         const newLog: LogEntry = {
+            id: crypto.randomUUID(),
+            timestamp: new Date().toLocaleTimeString("pt-BR"),
+            chipId: "Campanha",
+            message: msg,
+            type: "info"
+        };
+        setLogs((prev) => [...prev.slice(-99), newLog]);
+    });
+
+    socketInstance.on("qr_code_v2", ({ chipId, qr, qrTimestamp }: { chipId: string; qr: string, qrTimestamp?: number }) => {
+         console.log(`[Socket] QR v2 received for ${chipId} ts=${qrTimestamp}`);
+         setQrCodes((prev) => ({ ...prev, [chipId]: qr }));
+         setSessions((prev) => {
+            const cleanPrev = prev.filter(s => !s.id.startsWith("temp_"));
+            if (cleanPrev.find(s => s.id === chipId)) {
+              return cleanPrev.map((s) =>
+                s.id === chipId ? { ...s, status: "QR", qrTimestamp } : s
+              );
+            }
+             return [...cleanPrev, { 
+                 id: chipId, 
+                 status: 'QR', 
+                 displayOrder: cleanPrev.length + 1,
+                 qrTimestamp
+             }];
+        });
+    });
+    
+    // NEW: Listen to message events for the Terminal
+    socketInstance.on("message_status", (payload: any) => {
+        // payload: { campaignId, contactId, phone, status, error? }
+        const { phone, status, error, clientMessageId } = payload;
+        
+        // UX Cleanup 1: Ignore intermediate technical statuses
+        if (status === "SERVER_ACK" || status === "READ" || status === "PLAYED") {
+             return; 
+        }
+
+        let msg = "";
+        let type: LogEntry["type"] = "info";
+        
+        // UX Cleanup 2: Format phone number nicely
+        // FALLBACK: Use "Contato Desconhecido" if phone is undefined/null
+        let phoneLabel = phone || "Contato Desconhecido";
+        try {
+            if (phone) {
+                const cleaned = phone.replace(/\D/g, '');
+                if (cleaned.startsWith('55') && cleaned.length >= 12) {
+                    const ddd = cleaned.slice(2, 4);
+                    const part1 = cleaned.slice(4, cleaned.length - 4);
+                    const part2 = cleaned.slice(-4);
+                    phoneLabel = `(${ddd}) ${part1}-${part2}`;
+                }
+            }
+        } catch (e) {}
+
+        if (status === "SENDING") { // New status from backend for Start of Dispatch
+          msg = `Mensagem sendo enviada para o n° ${phoneLabel}...`;
+        } else if (status === "DELIVERED" || status === "SENT") { // Treated as Success (Soft or Hard)
+          // DEDUPLICATION: Check if we already logged success for this message ID
+          if (processedIds.has(clientMessageId)) {
+              return; // Skip duplicate
+          }
+          processedIds.add(clientMessageId);
+
+          msg = `Mensagem enviada com sucesso para o ${phoneLabel}`;
+          type = "success";
+        } else if (status === "FAILED") {
+          msg = `Mensagem não pôde ser enviada para o número ${phoneLabel} pelo motivo de [${error || "Erro"}]`;
+          type = "error";
+        } else {
+             return; 
+        }
+        
+        // UX Cleanup 3: Deduplicate (don't show same status for same person twice in row)
+        setLogs((prev) => {
+            const lastLog = prev[prev.length - 1];
+            if (lastLog && lastLog.message === msg) {
+                return prev; // Ignore duplicate
+            }
+            
+            const newLog: LogEntry = {
+                id: crypto.randomUUID(),
+                timestamp: new Date().toLocaleTimeString("pt-BR"),
+                chipId: "Campanha", // More friendly name
+                message: msg,
+                type: type
+            };
+            return [...prev.slice(-99), newLog];
         });
     });
 
@@ -234,8 +388,7 @@ export function SocketProvider({ children }: { children: ReactNode }) {
             return prev.map(s => s.id === chipId ? { ...s, status: normalizedStatus } : s);
         });
 
-        // If ready, clear QR and refresh full data (to get phone number)
-        if (normalizedStatus === "READY" || normalizedStatus === "ONLINE") {
+        if (["READY", "ONLINE", "AUTHENTICATING", "CONNECTED", "SYNCING"].includes(normalizedStatus)) {
             setQrCodes((prev) => {
                 const newQrs = { ...prev };
                 delete newQrs[chipId];
@@ -245,12 +398,35 @@ export function SocketProvider({ children }: { children: ReactNode }) {
         }
     });
 
+    socketInstance.on("session_deleted", ({ chipId }: { chipId: string }) => {
+        console.log(`[Socket] Session deleted for ${chipId}`);
+        // Remove from sessions
+        setSessions(prev => prev.filter(s => s.id !== chipId));
+        // Remove QR
+        setQrCodes(prev => {
+            const newQrs = { ...prev };
+            delete newQrs[chipId];
+            return newQrs;
+        });
+    });
+
     setSocket(socketInstance);
 
     return () => {
       socketInstance.disconnect();
     };
   }, [refreshSessions]);
+
+  // Strictly order and index sessions for consistent UI
+  const derivedSessions = useMemo(() => {
+    return [...sessions]
+      .sort((a, b) => {
+        const timeA = parseInt(String(a.id).split('_')[1] || "0", 10);
+        const timeB = parseInt(String(b.id).split('_')[1] || "0", 10);
+        return timeA - timeB;
+      })
+      .map((s, idx) => ({ ...s, displayOrder: idx + 1 }));
+  }, [sessions]);
 
   return (
     <SocketContext.Provider
@@ -260,7 +436,7 @@ export function SocketProvider({ children }: { children: ReactNode }) {
         logs,
         qrCodes,
         sessionChanges,
-        sessions,
+        sessions: derivedSessions,
         refreshSessions,
         clearLogs,
         formatChipLabel,

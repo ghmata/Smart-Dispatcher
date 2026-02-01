@@ -7,8 +7,9 @@ import { StepUpload } from "@/components/campaign/step-upload";
 import { StepMessage } from "@/components/campaign/step-message";
 import { StepConfig } from "@/components/campaign/step-config";
 import { StepLaunch } from "@/components/campaign/step-launch";
-import { startCampaign } from "@/lib/api";
+import { startCampaign, getStatus } from "@/lib/api";
 import { cn } from "@/lib/utils";
+import { useEffect } from "react";
 import {
   Upload,
   MessageSquare,
@@ -30,7 +31,10 @@ interface CampaignViewProps {
   onRouteChange: (route: string) => void;
 }
 
+import { useToast } from "@/components/ui/use-toast";
+
 export function CampaignView({ onRouteChange }: CampaignViewProps) {
+  const { toast } = useToast();
   const [currentStep, setCurrentStep] = useState(1);
   const [file, setFile] = useState<File | null>(null);
   const [previewData, setPreviewData] = useState<string[][]>([]);
@@ -38,6 +42,18 @@ export function CampaignView({ onRouteChange }: CampaignViewProps) {
   const [delayMin, setDelayMin] = useState(15);
   const [delayMax, setDelayMax] = useState(45);
   const [launching, setLaunching] = useState(false);
+  const [returnToLaunch, setReturnToLaunch] = useState(false);
+  const [isBlocked, setIsBlocked] = useState(false); // NEW: Block if active
+
+  // Check if system is busy on mount
+
+  useEffect(() => {
+      getStatus().then(status => {
+          if (status.active_campaigns > 0) {
+              setIsBlocked(true);
+          }
+      }).catch(console.error);
+  }, []);
 
   const canProceed = () => {
     switch (currentStep) {
@@ -49,6 +65,20 @@ export function CampaignView({ onRouteChange }: CampaignViewProps) {
         return delayMin < delayMax;
       default:
         return true;
+    }
+  };
+
+  const handleEditStep = (stepId: number) => {
+    setReturnToLaunch(true);
+    setCurrentStep(stepId);
+  };
+
+  const handleNext = () => {
+    if (returnToLaunch) {
+      setCurrentStep(4);
+      setReturnToLaunch(false);
+    } else {
+      setCurrentStep((prev) => Math.min(4, prev + 1));
     }
   };
 
@@ -64,10 +94,27 @@ export function CampaignView({ onRouteChange }: CampaignViewProps) {
         delayMax,
       });
 
-      // Redirect to dashboard after successful launch
+      // Visual Handshake: Success notification
+      toast({
+        title: "✅ Campanha iniciada!",
+        description: "Preparando o envio...",
+        duration: 3000,
+        variant: "default", // or success if available, default is fine
+        className: "bg-green-600 text-white border-none"
+      });
+
+      // Cognitive Delay: Wait 2s before redirecting
+      await new Promise(resolve => setTimeout(resolve, 2000));
+
+      // Redirect to dashboard after delay
       onRouteChange("dashboard");
     } catch (error) {
       console.error("[v0] Error starting campaign:", error);
+      toast({
+        title: "Erro ao iniciar",
+        description: "Verifique o console ou tente novamente.",
+        variant: "destructive"
+      });
     } finally {
       setLaunching(false);
     }
@@ -82,6 +129,18 @@ export function CampaignView({ onRouteChange }: CampaignViewProps) {
         </p>
       </div>
 
+      {isBlocked && (
+          <div className="rounded-md bg-yellow-500/15 p-4 border border-yellow-500/30 text-yellow-500">
+              <div className="flex items-center gap-2">
+                  <Rocket className="h-5 w-5" />
+                  <p className="font-medium">Campanha em Andamento</p>
+              </div>
+              <p className="text-sm mt-1 opacity-90">
+                  Já existe uma campanha sendo processada. Aguarde o término para iniciar uma nova.
+              </p>
+          </div>
+      )}
+
       {/* Step Indicator */}
       <Card className="border-border bg-card/50">
         <CardContent className="p-4">
@@ -94,7 +153,10 @@ export function CampaignView({ onRouteChange }: CampaignViewProps) {
               return (
                 <div key={step.id} className="flex items-center flex-1">
                   <button
-                    onClick={() => setCurrentStep(step.id)}
+                    onClick={() => {
+                        setCurrentStep(step.id);
+                        if (step.id !== 4) setReturnToLaunch(false);
+                    }}
                     className={cn(
                       "flex items-center gap-2 transition-all duration-200",
                       isCurrent
@@ -169,6 +231,7 @@ export function CampaignView({ onRouteChange }: CampaignViewProps) {
               delayMax={delayMax}
               onLaunch={handleLaunch}
               launching={launching}
+              onEditStep={handleEditStep}
             />
           )}
         </CardContent>
@@ -179,19 +242,31 @@ export function CampaignView({ onRouteChange }: CampaignViewProps) {
         <div className="flex justify-between">
           <Button
             variant="outline"
-            onClick={() => setCurrentStep((prev) => Math.max(1, prev - 1))}
+            onClick={() => {
+                setCurrentStep((prev) => Math.max(1, prev - 1));
+                setReturnToLaunch(false); // Cancel edit flow if going back
+            }}
             disabled={currentStep === 1}
           >
             <ChevronLeft className="mr-2 h-4 w-4" />
             Voltar
           </Button>
           <Button
-            onClick={() => setCurrentStep((prev) => Math.min(4, prev + 1))}
-            disabled={!canProceed()}
+            onClick={handleNext}
+            disabled={!canProceed() || isBlocked}
             className="bg-primary hover:bg-primary/90 text-primary-foreground"
           >
-            Próximo
-            <ChevronRight className="ml-2 h-4 w-4" />
+            {returnToLaunch ? (
+                 <>
+                    Salvar e Voltar
+                    <Check className="ml-2 h-4 w-4" />
+                 </>
+            ) : (
+                <>
+                    Próximo
+                    <ChevronRight className="ml-2 h-4 w-4" />
+                </>
+            )}
           </Button>
         </div>
       )}

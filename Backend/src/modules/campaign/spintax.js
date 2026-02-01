@@ -17,7 +17,7 @@ class SpintaxParser {
     let processed = text;
     while (spinRegex.test(processed)) {
       processed = processed.replace(spinRegex, (match, content) => {
-        const options = content.split('|');
+        const options = content.split('/');
         const randomOption = options[Math.floor(Math.random() * options.length)];
         return randomOption;
       });
